@@ -306,7 +306,7 @@ static int findSlimes(uint64_t seed, Pos starting_pos, Pos *slime_pos)
 				int chunkZ = lumpZ + centerZ - 9;
 				slime_pos->x = 16 * chunkX + 8;
 				slime_pos->z = 16 * chunkZ + 8;
-				//return count;
+				return count;
 			}
 		}
 		
