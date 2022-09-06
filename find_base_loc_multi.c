@@ -15,13 +15,13 @@
 // these are in blocks, but will be converted to chunks
 #define FORTRESS_DIST 1000
 #define OUTPOST_DIST 10000
-#define BIOMES_DIST 10000
+#define BIOMES_DIST 20000
 #define JUNGLE_TEST 1000
 #define TAIGA_TEST 1000
-#define QUARRY_LENGTH 2000
+#define QUARRY_LENGTH 1000
 #define SLIMES_DIST 80000
 // how many slime chunks you want within the perimeter
-#define SLIMES_MIN 42
+#define SLIMES_MIN 40
 // making this higher will be very slightly faster, but might miss some slime locations
 #define SLIMES_CUTOFF (SLIMES_MIN / 4)
 
@@ -190,18 +190,18 @@ static bool hasBiome(int *biomeIds, int span, int testw, int testh, int (*biome)
 //  6. Desert
 static bool hasBiomes(Generator *g, Pos pos, Pos *oppos)
 {
-	int span = ((BIOMES_DIST + 15) / 16) * 2; // always even
+	int span = BIOMES_DIST / 16; 
 
-	Range r = {16, pos.x / 16 - span / 2, pos.z / 16 - span / 2, span, span, 15, 1};
+	Range r = {16, pos.x / 16 - span, pos.z / 16 - span, 2 * span + 1, 2 * span + 1, 15, 1};
 
 	int *biomeIds = allocCache(g, r);
 	genBiomes(g, biomeIds, r);
 
 	bool valid = true
-			&& hasBiome(biomeIds, span, JUNGLE_TEST / 16, JUNGLE_TEST / 16, &isJungle, oppos)
-			&& hasBiome(biomeIds, span, TAIGA_TEST / 16, TAIGA_TEST / 16, &isTaiga, oppos + 1)
-			&& (hasBiome(biomeIds, span, QUARRY_LENGTH / 16, 8, &isMesa, oppos + 2)
-				|| hasBiome(biomeIds, span, 8, QUARRY_LENGTH / 16, &isMesa, oppos + 2))
+			&& hasBiome(biomeIds, 2 * span + 1, JUNGLE_TEST / 16, JUNGLE_TEST / 16, &isJungle, oppos)
+			&& hasBiome(biomeIds, 2 * span + 1, TAIGA_TEST / 16, TAIGA_TEST / 16, &isTaiga, oppos + 1)
+			&& (hasBiome(biomeIds, 2 * span + 1, QUARRY_LENGTH / 16, 2, &isMesa, oppos + 2)
+				|| hasBiome(biomeIds, 2 * span + 1, 2, QUARRY_LENGTH / 16, &isMesa, oppos + 2))
 		;
 	
 	if(!valid)
@@ -457,7 +457,7 @@ int main(int argc, char *argv[])
 	getStructureConfig(Fortress, MC, &conf_fortress);
 	getStructureConfig(Outpost, MC, &conf_outpost);
 
-	FILE *csv = fopen("seeds.csv", "w");
+	FILE *csv = fopen("seeds.csv", "a");
 	if(!csv)
 	{
 		printf("Could not open output file.");
