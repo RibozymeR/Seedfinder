@@ -12,9 +12,11 @@
 // these are in chunks
 #define MUSH_TEST 7
 #define SOUL_TEST 7
-// these are in blocks, but will be converted to chunks
+// these are in blocks, but will be converted to chunks and/or regions
 #define FORTRESS_DIST 1000
 #define OUTPOST_DIST 10000
+#define HUTS_DIST 20000
+#define MONUMENTS_DIST 20000
 #define BIOMES_DIST 20000
 #define JUNGLE_TEST 1000
 #define TAIGA_TEST 1000
@@ -24,6 +26,15 @@
 #define SLIMES_MIN 40
 // making this higher will be very slightly faster, but might miss some slime locations
 #define SLIMES_CUTOFF (SLIMES_MIN / 4)
+
+static int distpos(Pos, Pos);
+
+static int count_hut;
+static int count_monum;
+static StructureConfig conf_fortress;
+static StructureConfig conf_outpost;
+static StructureConfig conf_hut;
+static StructureConfig conf_monument;
 
 static inline int *reallocCache(int *cache, size_t *current, const Generator *g, Range r)
 {
@@ -36,6 +47,53 @@ static inline int *reallocCache(int *cache, size_t *current, const Generator *g,
 	}
 	
 	return cache;
+}
+
+// this function is a lot of copy-paste, so gonna make some temp. macros
+static inline bool haveMaxEnclosure(Pos p1, Pos p2, Pos p3, Pos p4, int radius)
+{
+	#define testdist(a,b) if(distpos(a, b) > 2*radius) { return false; }
+	testdist(p1, p2)
+	testdist(p1, p3)
+	testdist(p2, p3)
+	testdist(p1, p4)
+	testdist(p2, p4)
+	testdist(p3, p4)
+	#undef testdist
+	
+    int x1 = p1.x, z1 = p1.z;
+	int x2 = p2.x, z2 = p2.z;
+	int x3 = p3.x, z3 = p3.z;
+	int x4 = p4.x, z4 = p4.z;
+
+    // sort x and z values
+	#define sort(a,b) if(a > b) { int h = a; a = b; b = h; }
+	sort(x1, x2) sort(x2, x3) sort(x3, x4)
+	sort(x1, x2) sort(x2, x3)
+	sort(x1, x2)
+	sort(z1, z2) sort(z2, z3) sort(z3, z4)
+	sort(z1, z2) sort(z2, z3)
+	sort(z1, z2)
+	#undef sort
+	
+    int minx = x4 - radius;
+    int maxx = x1 + radius;
+    int minz = z4 - radius;
+    int maxz = z1 + radius;
+
+    // brute force the best center position
+    for(int z = minz; z <= maxz; z++)
+        for(int x = minx; x <= maxx; x++)
+        {
+            int sq = (x-x1)*(x-x1) + (z-z1)*(z-z1);
+			sq = max(sq, (x-x2)*(x-x2) + (z-z2)*(z-z2));
+			sq = max(sq, (x-x3)*(x-x3) + (z-z3)*(z-z3));
+			sq = max(sq, (x-x4)*(x-x4) + (z-z4)*(z-z4));
+            if(sq <= radius * radius)
+				return true;
+        }
+
+    return false;
 }
 
 static bool isMushroom(Generator *g, Pos pos)
@@ -62,7 +120,6 @@ static bool isMushroom(Generator *g, Pos pos)
 	return true;
 }
 
-static StructureConfig conf_fortress;
 static bool hasFortress(Generator *g, int x, int z, Pos *ftpos)
 {
 	int span = 16 * conf_fortress.regionSize;
@@ -105,7 +162,6 @@ static bool hasFortress(Generator *g, int x, int z, Pos *ftpos)
 	return false;
 }
 
-static StructureConfig conf_outpost;
 static bool hasOutpost(Generator *g, Pos pos, Pos *oppos)
 {
 	int span = 16 * conf_outpost.regionSize;
@@ -190,11 +246,13 @@ static bool hasBiome(int *biomeIds, int span, int testw, int testh, int (*biome)
 //  6. Desert
 static bool hasBiomes(Generator *g, Pos pos, Pos *oppos)
 {
+	static __thread int *biomeIds = NULL;
+	static __thread size_t idsStorage = 0;
+	
 	int span = BIOMES_DIST / 16; 
 
 	Range r = {16, pos.x / 16 - span, pos.z / 16 - span, 2 * span + 1, 2 * span + 1, 15, 1};
-
-	int *biomeIds = allocCache(g, r);
+	biomeIds = reallocCache(biomeIds, &idsStorage, g, r);
 	genBiomes(g, biomeIds, r);
 
 	bool valid = true
@@ -203,12 +261,6 @@ static bool hasBiomes(Generator *g, Pos pos, Pos *oppos)
 			&& (hasBiome(biomeIds, 2 * span + 1, QUARRY_LENGTH / 16, 2, &isMesa, oppos + 2)
 				|| hasBiome(biomeIds, 2 * span + 1, 2, QUARRY_LENGTH / 16, &isMesa, oppos + 2))
 		;
-	
-	if(!valid)
-	{
-		free(biomeIds);
-		return false;
-	}
 	
 	for(int i = 0; i < 3; ++i)
 	{
@@ -239,7 +291,6 @@ static bool hasBiomes(Generator *g, Pos pos, Pos *oppos)
 	}
 	if(!desert_found) oppos[5].x = oppos[5].z = 100 * BIOMES_DIST - 1;
 
-	free(biomeIds);
 	return valid;
 }
 
@@ -325,6 +376,136 @@ static int findSlimes(uint64_t seed, Pos starting_pos, Pos *slime_pos)
 	return 0;
 }
 
+static bool hasRegDoubleStructure(enum StructureType type, Generator *g, int regX, int regZ, int radius, Pos *oppos)
+{
+	Pos mpos1, mpos2;
+	
+	int monum1 = getStructurePos(type, g->mc, g->seed, regX, regZ, &mpos1);
+	if(!monum1)
+		return false;
+	
+	{
+		int monum2 = getStructurePos(type, g->mc, g->seed, regX + 1, regZ, &mpos2);
+		if(!monum2)
+			return false;
+		
+		if(distpos(mpos1, mpos2) > 2*radius)
+			return false;
+		
+		int viable = isViableStructurePos(type, g, mpos1.x, mpos1.z, 0)
+						&& isViableStructurePos(type, g, mpos2.x, mpos2.z, 0);
+		if(!viable)
+			return false;
+	}
+	
+	{
+		int monum2 = getStructurePos(type, g->mc, g->seed, regX, regZ + 1, &mpos2);
+		if(!monum2)
+			return false;
+		
+		if(distpos(mpos1, mpos2) > 2*radius)
+			return false;
+		
+		int viable = isViableStructurePos(type, g, mpos1.x, mpos1.z, 0)
+						&& isViableStructurePos(type, g, mpos2.x, mpos2.z, 0);
+		if(!viable)
+			return false;
+	}
+	
+	*oppos = (Pos){ (mpos1.x + mpos2.x)/2, (mpos1.z + mpos2.z)/2 };
+	return true;
+}
+
+static bool hasDoubleStructure(StructureConfig *config, const int DIST, int radius, Generator *g, Pos pos, Pos *oppos)
+{
+	int span = 16 * config->regionSize;
+
+	int rdist = DIST / span;
+	int rx = pos.x / span;
+	int rz = pos.z / span;
+	
+	int x = 0, z = 0, dirx = 0, dirz = -1;
+	for(int c = 0; c < (2 * rdist + 1) * (2 * rdist + 1); ++c)
+	{
+		if(hasRegDoubleStructure(config->structType, g, rx + x, rz + z, radius, oppos))
+			return true;
+		
+		x += dirx;
+		z += dirz;
+		if(dirz == -1 ? (x == z + 1) : (abs(x) == abs(z)))
+		{
+			int ndirx = -dirz;
+			dirz = dirx;
+			dirx = ndirx;
+		}
+	}
+
+	return false;
+}
+
+static bool hasRegQuadStructure(enum StructureType type, Generator *g, int regX, int regZ, int radius, Pos *oppos)
+{
+	Pos mpos1, mpos2, mpos3, mpos4;
+	
+	int monum1 = getStructurePos(type, g->mc, g->seed, regX, regZ, &mpos1);
+	if(!monum1)
+		return false;
+	
+	int monum2 = getStructurePos(type, g->mc, g->seed, regX + 1, regZ, &mpos2);
+	if(!monum2)
+		return false;
+	
+	int monum3 = getStructurePos(type, g->mc, g->seed, regX, regZ + 1, &mpos3);
+	if(!monum3)
+		return false;
+	
+	int monum4 = getStructurePos(type, g->mc, g->seed, regX + 1, regZ + 1, &mpos4);
+	if(!monum4)
+		return false;
+	
+	if(!haveMaxEnclosure(mpos1, mpos2, mpos3, mpos4, radius))
+		return false;
+	
+	int viable = isViableStructurePos(type, g, mpos1.x, mpos1.z, 0)
+					&& isViableStructurePos(type, g, mpos2.x, mpos2.z, 0)
+					&& isViableStructurePos(type, g, mpos3.x, mpos3.z, 0)
+					&& isViableStructurePos(type, g, mpos4.x, mpos4.z, 0);
+	if(viable)
+	{
+		*oppos = mpos1;
+		return true;
+	}
+	
+	return false;
+}
+
+static bool hasQuadStructure(StructureConfig *config, const int DIST, int radius, Generator *g, Pos pos, Pos *oppos)
+{
+	int span = 16 * config->regionSize;
+
+	int rdist = DIST / span;
+	int rx = pos.x / span;
+	int rz = pos.z / span;
+	
+	int x = 0, z = 0, dirx = 0, dirz = -1;
+	for(int c = 0; c < (2 * rdist + 1) * (2 * rdist + 1); ++c)
+	{
+		if(hasRegQuadStructure(config->structType, g, rx + x, rz + z, radius, oppos))
+			return true;
+		
+		x += dirx;
+		z += dirz;
+		if(dirz == -1 ? (x == z + 1) : (abs(x) == abs(z)))
+		{
+			int ndirx = -dirz;
+			dirz = dirx;
+			dirx = ndirx;
+		}
+	}
+
+	return false;
+}
+
 static int dist(int x1, int z1, int x2, int z2)
 {
 	return (int)hypot(x1 - x2, z1 - z2);
@@ -357,6 +538,8 @@ static void *searchSeeds(void *dataptr)
 	Pos found_pos, nether_pos, outp_pos;
 	Pos biomes_pos[6];
 	Pos slimes_pos;
+	Pos huts_pos;
+	Pos monums_pos;
 	int slimecount;
 	
 	for(uint64_t seed = seedstart;; seed += seedincr)
@@ -383,7 +566,17 @@ static void *searchSeeds(void *dataptr)
 			if(!hasOutpost(&g, sh.pos, &outp_pos)) continue;
 			if(!hasBiomes(&g, sh.pos, biomes_pos)) continue;
 			if((slimecount = findSlimes(seed, sh.pos, &slimes_pos)) == 0) continue;
-
+			if(!(
+				count_hut == 2
+				? hasDoubleStructure(&conf_hut, HUTS_DIST, 128, &g, sh.pos, &huts_pos)
+				: hasQuadStructure(&conf_hut, HUTS_DIST, 128, &g, sh.pos, &huts_pos)
+			)) continue;
+			if(!(
+				count_monum == 2
+				? hasDoubleStructure(&conf_monument, MONUMENTS_DIST, 100, &g, sh.pos, &monums_pos)
+				: hasQuadStructure(&conf_monument, MONUMENTS_DIST, 100, &g, sh.pos, &monums_pos)
+			)) continue;
+			
 			found = true;
 			found_pos = sh.pos;
 		}
@@ -403,6 +596,8 @@ static void *searchSeeds(void *dataptr)
 			fprintf(csv, ";%d;%d", biomes_pos[2].x, biomes_pos[2].z);
 			fprintf(csv, ";%d;%d", biomes_pos[5].x, biomes_pos[5].z);
 			fprintf(csv, ";%d;%d;%d", slimes_pos.x, slimes_pos.z, slimecount);
+			fprintf(csv, ";%d;%d", huts_pos.x, huts_pos.z);
+			fprintf(csv, ";%d;%d", monums_pos.x, monums_pos.z);
 			fprintf(csv, "\n");
 			fflush(csv);
 		}
@@ -424,10 +619,10 @@ DONE:
 - Runs continuously finding as many as possible
 - x and z coordinates of all things found
 - x and z of the center point for the slime chunk as well as the number of slime chunks
-
-NOT DONE:
 - Quad hut (first within X of hub)
 - Quad monument (within X of hub)
+
+NOT DONE:
 - Mesa region suitable for a quarry (very long, length being min 2000, and at least 5x width) (within X of hub) being at least Y% mesa biome variant
   -> (is 2000x10000 possible???)
   -> currently testing 2000x8
@@ -440,6 +635,18 @@ NOT DOABLE:
 
 int main(int argc, char *argv[])
 {
+	if(argc >= 2 && strcmp(argv[1], "?") == 0)
+	{
+		printf("Usage: %s [start] [threads] [huts] [monuments]\n", argv[0]);
+		printf("       %s ?\n", argv[0]);
+		printf("Options:\n");
+		printf("  start = seed to start search at, default 0\n");
+		printf("  threads = number of threads to use, default %d\n", THREADS);
+		printf("  huts = number of witch huts to look for, one of 2,4, default 4\n");
+		printf("  monuments = number of monuments to look for, one of 2,4, default 4\n");
+		return 0;
+	}
+	
 	uint64_t seedstart = 0;
 	if(argc >= 2)
 		sscanf(argv[1], "%" PRId64, &seedstart);
@@ -453,9 +660,19 @@ int main(int argc, char *argv[])
 		printf("%d is not a good number of threads to use.\n", threadcount);
 		return 1;
 	}
-
+	
+	count_hut = 4;
+	if(argc >= 4)
+		sscanf(argv[3], "%d", &count_hut);
+	
+	count_monum = 4;
+	if(argc >= 5)
+		sscanf(argv[4], "%d", &count_monum);
+	
 	getStructureConfig(Fortress, MC, &conf_fortress);
 	getStructureConfig(Outpost, MC, &conf_outpost);
+	getStructureConfig(Swamp_Hut, MC, &conf_hut);
+	getStructureConfig(Monument, MC, &conf_monument);
 
 	FILE *csv = fopen("seeds.csv", "a");
 	if(!csv)
@@ -463,9 +680,13 @@ int main(int argc, char *argv[])
 		printf("Could not open output file.");
 		return 1;
 	}
+	
+	char *label[5] = {NULL, NULL, "Double", NULL, "Quad"};
 	fprintf(csv, "Seed;Base X;Base Z;Mushroom Count;Fortress X;Fortress Z;Fortress Dist;Outpost X;Outpost Z;Outpost Dist;"
 		"Jungle X;Jungle Z;Mega Taiga X;Mega Taiga Z;Mesa Quarry X;Mesa Quarry Z;"
-		"Desert X;Desert Z;Slime X;Slime Z;Slime Count\n");
+		"Desert X;Desert Z;Slime X;Slime Z;Slime Count;"
+		"%s Hut X;%s Hut Z;%s Monument X;%s Monument Z\n",
+		label[count_hut], label[count_hut], label[count_monum], label[count_monum]);
 
 	pthread_t threads[64];
 	seed_search_data_t datas[64];
