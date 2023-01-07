@@ -521,6 +521,7 @@ typedef struct
 	uint64_t seedstart;
 	uint64_t seedincr;
 	FILE *csv;
+	FILE *seedlog;
 } seed_search_data_t;
 
 static void *searchSeeds(void *dataptr)
@@ -529,6 +530,7 @@ static void *searchSeeds(void *dataptr)
 	uint64_t seedstart = data->seedstart;
 	uint64_t seedincr = data->seedincr;
 	FILE *csv = data->csv;
+	FILE *seedlog = data->seedlog;
 	
 	Generator g, ng;
 	setupGenerator(&g, MC, 0);
@@ -545,7 +547,12 @@ static void *searchSeeds(void *dataptr)
 	for(uint64_t seed = seedstart;; seed += seedincr)
 	{
 		if(seed % 10000 == 0)
+		{
 			printf("Searching %" PRId64 "...\n", seed);
+			fseek(seedlog, 0, SEEK_SET);
+			fprintf(seedlog, "%" PRId64 "\n", seed);
+			fflush(seedlog);
+		}
 		
 		initFirstStronghold(&sh, MC, seed);
 
@@ -681,6 +688,14 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	
+	FILE *seedlog = fopen("seedlog.txt", "w");
+	if(!seedlog)
+	{
+		fclose(csv);
+		printf("Could not open seed log file.");
+		return 1;
+	}
+	
 	char *label[5] = {NULL, NULL, "Double", NULL, "Quad"};
 	fprintf(csv, "Seed;Base X;Base Z;Mushroom Count;Fortress X;Fortress Z;Fortress Dist;Outpost X;Outpost Z;Outpost Dist;"
 		"Jungle X;Jungle Z;Mega Taiga X;Mega Taiga Z;Mesa Quarry X;Mesa Quarry Z;"
@@ -693,13 +708,14 @@ int main(int argc, char *argv[])
 	int err = 0;
 	for(int i = 0; i < threadcount; ++i)
 	{
-		datas[i] = (seed_search_data_t) { seedstart + (uint64_t)i, (uint64_t)threadcount, csv };
+		datas[i] = (seed_search_data_t) { seedstart + (uint64_t)i, (uint64_t)threadcount, csv, seedlog };
 		err |= pthread_create(&threads[i], NULL, &searchSeeds, &datas[i]);
 	}
 	if(err)
 	{
 		printf("Thread creation failed.\n");
 		fclose(csv);
+		fclose(seedlog);
 		return 1;
 	}
 
@@ -712,6 +728,7 @@ int main(int argc, char *argv[])
 	
 	printf("Done!\n");
 	fclose(csv);
+	fclose(seedlog);
 
 	return 0;
 }
