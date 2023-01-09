@@ -49,6 +49,11 @@ static inline int *reallocCache(int *cache, size_t *current, const Generator *g,
 	return cache;
 }
 
+static inline int max(int a, int b)
+{
+	return a > b ? a : b;
+}
+
 // this function is a lot of copy-paste, so gonna make some temp. macros
 static inline bool haveMaxEnclosure(Pos p1, Pos p2, Pos p3, Pos p4, int radius)
 {
